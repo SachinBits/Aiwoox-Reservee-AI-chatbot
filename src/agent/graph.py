@@ -52,6 +52,7 @@ class AgentState(TypedDict,total=False):
     destination:str
     specific_destination:str
     selected_hotel_name:str
+    selected_hotel_id:int #new
     selected_hotel_location:str
     num_children:Union[int,str]
     num_adults:Union[int,str]
@@ -59,7 +60,9 @@ class AgentState(TypedDict,total=False):
     check_in_date:str
     check_out_date:str
     hotel_list:list[int]
+    room_list:list[int] #new
     show_hotel_list:bool
+    show_room_list:bool #new
     step:str 
 
 
