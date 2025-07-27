@@ -69,9 +69,9 @@ class AgentState(TypedDict,total=False):
 
 
 detail_gatherer_template = """
-Your job is to get detailed information from a user about the location they want to visit.
+Your job is to get detailed information from a user about the location they want to visit as well as call the 'update_state' tool and set the 'show_hotel_list' to 'FALSE'.
 
-You should collect the following information from them:
+Always collect all the following information from them:
 
 - Where they want to go, the 'Destination' (e.g., country, state, or city)
 - The specific location in the destination, the 'specific_destination' (e.g., specific neighborhood, landmark, or resort)
@@ -89,7 +89,7 @@ Ask the above details one by one, and if they are not sure about specific destin
 ** Dont update any state with the number 0 instead put the string 'zero'.
 ** After collecting all the details just say thanks for the information. would you like me to get the hotels according to your preferences.
 If the user provides all or part of this information in one attempt (e.g., "We want to go to Los Angeles, USA with 2 adults and 1 child, our budget is $1500, check-in on July 5, check-out on July 10"), you should decode and extract these details clearly.
-** Always call the 'update_state' tool and change the show_hotel_list's state to FALSE.
+** Always call the 'update_state' tool and change the show_hotel_list's state to 'FALSE'.
 If you are not able to discern any of this information, ask them to clarify politely. Do not attempt to wildly guess missing details.
 
 Once you have gathered **all** of the required information, call the relevant tool with the structured data you have extracted.
@@ -255,7 +255,7 @@ contextualize_system_prompt=(
 qa_system_prompt = (
     "You are a superb assistant who can help customers to book hotels according to their preferences. "
     "Use the following pieces of retrieved context to answer the question. "
-    "List ALL hotels with cabin room types explicitly if the user requests cabin hotels. "
+    "List ALL hotels according to the user's preferences "
     "If you don't know, say so politely. Be concise but ensure you include all requested hotels."
     "\n\n{context}"
 )
@@ -295,7 +295,7 @@ rag_tools=[
     Tool(
         name="HotelsInfoTool",
         func=lambda input,**kwargs:rag_chain.invoke({"input":input,"chat_history":kwargs.get("chat_history",[])}),
-        description="useful for when you need to answer the questions or information about the hotels",
+        description="useful for when you need to retrieve hotels or answer the questions or information about the hotels",
         args_schema=ToolInput
 
     ),update_state
@@ -308,11 +308,11 @@ def should_continue_rag_agent(state:AgentState):
 
 system_prompt = """
     You are an intelligent hotel booking assistant. 
-    Use the HotelsInfoTool to the best hotels according to the users preferences around 4-5 hotels or more(Dont give unrelated hotels). Near by ones to the location is also good.
+    Use the HotelsInfoTool to list all the best hotels according to the users preferences around 4-5 hotels or more(Dont give unrelated hotels). Near by ones to the location is also good.
     Always pass the user’s query as the 'input' argument when calling this tool.
     ** After/while giving the hotels option's to the user call the 'update_state' tool and update the hotel_list state with the supabase hotel_id's of the retrived hotels.
-    **  only when displaying the hotel's list call the 'update_state' tool and put show_hotel_list to true otherwise false.
-    ** Just display the hotel names as the 'AI Message'.
+    ** only when displaying the hotel's list call the 'update_state' tool and put show_hotel_list to true otherwise false.
+    ** Just display all the hotel relevant names(in list 1. 2. 3. so on) as the 'AI Message'.
     """
 
 chat_history=ConversationBufferWindowMemory(memory_key="chat_history",k=10,return_messages=True)
@@ -350,7 +350,7 @@ Rag_agent=(StateGraph(AgentState)
 Booking_agent_prompt="""
     You are an Helpful assistant who helps to confirm and book the hotels.
     ** After the user selects the hotel, call the 'update_state' tool and update the selected_hotel_name state with the hotel name and the selected_hotel_location with the hotel's location.
-    ** update the show_hotel_list's state to FALSE by calling the 'update_state' tool.
+    ** Always call the 'update_state' tool and change the show_hotel_list's state to 'FALSE'.
 """
 
 
@@ -408,7 +408,7 @@ def ai_router(state:AgentState):
     message=model.with_structured_output(Router).invoke(messages)
     required_fields = [
         state.get("destination"),
-        state.get("specific_destination"),
+        # state.get("specific_destination"),
         state.get("num_children"),
         state.get("num_adults"),
         state.get("budget"),
