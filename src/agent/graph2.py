@@ -11,27 +11,19 @@ from langchain.memory import ConversationBufferMemory,ConversationBufferWindowMe
 import os
 from dotenv import load_dotenv
 from langsmith import traceable
-from typing import TypedDict,Sequence,Annotated
+from typing import Literal, TypedDict,Sequence,Annotated,Optional,Union
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph,END,START
 from langchain_openai import AzureOpenAIEmbeddings,AzureChatOpenAI
-from langchain.tools import tool,Tool
+from langchain_core.tools import InjectedToolCallId, tool
+from pydantic import BaseModel
+from langgraph.types import Command 
+from langgraph.prebuilt import ToolNode
+import dateparser
+from datetime import datetime
+
 
 load_dotenv()
-
-
-url = "https://plxwdqmqiaxrdwlcmzdc.supabase.co"
-key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBseHdkcW1xaWF4cmR3bGNtemRjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTI3NjU5NCwiZXhwIjoyMDY2ODUyNTk0fQ.KqZeNmr6pMrUNzPxlLwgDqABBOjBq9bB6IgL3CEFZLw"
-
-supabase :Client =create_client(url,key)
-
-embeddings=AzureOpenAIEmbeddings(
-    model=os.getenv("AZURE_OPENAI_MODEL_NAME1"),
-    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-    api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME1")
-)
 
 model=AzureChatOpenAI(
     model=os.getenv("AZURE_OPENAI_MODEL_NAME"),
@@ -41,6 +33,190 @@ model=AzureChatOpenAI(
     azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
 )
 
+embeddings=AzureOpenAIEmbeddings(
+    model=os.getenv("AZURE_OPENAI_MODEL_NAME1"),
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+    azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME1")
+)
+
+url = os.getenv("supabase_url")
+key = os.getenv('supabase_key')
+supabase :Client =create_client(url,key)
+
+class AgentState(TypedDict,total=False):
+    messages:Annotated[Sequence[BaseMessage],add_messages]
+    chat_history:list[BaseMessage]
+    destination:str
+    specific_destination:str
+    selected_hotel_name:str
+    selected_hotel_id:int #new
+    selected_hotel_location:str
+    selected_room_name:str #new
+    num_children:Union[int,str]
+    num_adults:Union[int,str]
+    budget:Union[int,str]
+    check_in_date: str
+    check_out_date: str
+    hotel_list:list[int]
+    room_list:list[int] #new
+    show_hotel_list:bool
+    show_room_list:bool #new
+    step:str 
+
+detail_gatherer_template = """
+Your job is to get detailed information from a user about the location they want to visit as well as call the 'update_state' tool and set the 'show_hotel_list' to 'FALSE'.
+
+Always collect all the following information from them:
+
+- Where they want to go, the 'Destination' (e.g., country, state, or city)
+- The specific location in the destination, the 'specific_destination' (e.g., specific neighborhood, landmark, or resort)
+- The number of children, 'num_children'
+- The number of adults, 'num_adults'
+- Their budget for the trip, 'budget'
+- Their 'check_in_date' 
+- Their 'check_out_date'
+
+** always ask one question at a time 
+
+Ask the above details one by one, and if they are not sure about specific destination, you can update the state with unknown, dont ask them again.
+
+** If the user is not sure about any of the above details and you have already asked them about it when calling the 'update_tool' update that parameter with 'to-be-decided'
+** Dont update any state with the number 0 instead put the string 'zero'.
+** After collecting all the details just say thanks for the information. would you like me to get the hotels according to your preferences.
+If the user provides all or part of this information in one attempt (e.g., "We want to go to Los Angeles, USA with 2 adults and 1 child, our budget is $1500, check-in on July 5, check-out on July 10"), you should decode and extract these details clearly.
+** Always call the 'update_state' tool and change the show_hotel_list's state to 'FALSE'.
+If you are not able to discern any of this information, ask them to clarify politely. Do not attempt to wildly guess missing details.
+** Always answer in natural language no technical terms
+Once you have gathered **all** of the required information, call the relevant tool with the structured data you have extracted.
+"""
+
+@tool 
+def parse_date(
+    date_input:Union[int,str]=None,
+    field:str=None,
+    tool_call_id:Annotated[str,InjectedToolCallId]=None
+):
+    """
+    Converts the natural language date expressions (like 'tomorrow', 'next Friday') into a proper YYYY-MM-DD format.
+    Input: date_input:The date given by the user, field:The state to update the converted date_input into 
+    Output: Confirmation message that the state has been updated.
+    """
+    parsed=dateparser.parse(str(date_input),
+                            settings={
+                                'PREFER_DATES_FROM':'future',
+                                'RELATIVE_BASE':datetime.now()
+                            })
+
+    if parsed is None:
+        return Command(update={
+            'messages':[
+                ToolMessage(content=f"Could not parse date input: '{date_input}'. Please try again.",
+                    tool_call_id=tool_call_id)
+            ]
+        })
+    formatted = parsed.strftime("%Y-%m-%d")
+    return Command(update={
+        "messages": [
+            ToolMessage(    
+                content=f"Parsed date: {formatted}",
+                tool_call_id=tool_call_id,
+            )
+        ],
+        field: formatted,
+    })
+
+
+@tool
+def update_state(
+    destination:str=None,
+    specific_destination:str=None,
+    selected_hotel_name:str=None,
+    selected_hotel_location:str=None,
+    selected_room_name:str=None,
+    num_children:Union[int,str]=None,
+    num_adults:Union[int,str]=None,
+    budget:Union[int,str]=None,
+    # check_in_date:str=None,
+    # check_out_date:str=None,
+    hotel_list:list[int]=None,
+    show_hotel_list:bool=None,
+    tool_call_id: Annotated[str, InjectedToolCallId] = None,
+) -> str:
+    """
+    Update the booking state with provided details.
+    Use this tool to store or update information such as destination, specific_destination and any relevant information as the user provides them.
+    Inputs: Any combination of booking-related fields (destination, specific_destination etc).
+    Output: Confirmation message that the state has been updated.
+    """
+    updated_state = {}
+    if destination is not None:
+        updated_state['destination']=destination
+    if budget is not None:
+        updated_state["budget"] = budget
+    if specific_destination is not None:
+        updated_state['specific_destination']=specific_destination
+    if num_children is not None:
+        updated_state['num_children']=num_children
+    if num_adults is not None:
+        updated_state['num_adults']=num_adults
+    # if check_in_date is not None:
+    #     updated_state['check_in_date']=check_in_date
+    # if check_out_date is not None:
+    #     updated_state['check_out_date']=check_out_date
+    if selected_hotel_name is not None:
+        updated_state['selected_hotel_name']=selected_hotel_name
+    if selected_hotel_location is not None:
+        updated_state['selected_hotel_location']=selected_hotel_location
+    if hotel_list is not None:
+        updated_state['hotel_list']=hotel_list
+    if show_hotel_list is not None:
+        updated_state['show_hotel_list']=show_hotel_list
+    if selected_room_name is not None:
+        updated_state['selected_hotel_name']=selected_room_name
+    updated_state["messages"] = [
+        ToolMessage(
+            content="State updated successfully.",
+            tool_call_id=tool_call_id,
+        )
+    ]
+
+    return Command(update=updated_state)
+
+d_tools=ToolNode([update_state,parse_date])
+
+def call_details_gatherer(state:AgentState):
+    messages=state['messages']
+    d_model=model.bind_tools([update_state,parse_date])
+    messages=[SystemMessage(content=detail_gatherer_template)]+messages
+    response=d_model.invoke(messages)
+    location=state.get('destination','')
+    spec_loc=state.get('specific_destination')
+    print(f'destination:{location} specific location:{spec_loc}')
+    return {"messages": state["messages"] + [response]}
+
+def should_continue_details_gatherer(state:AgentState):
+    """check if the last message contains tool calls"""
+    messages=state['messages']
+    last_message=messages[-1]
+    if last_message.tool_calls:
+        return 'd_tools'
+    return END
+
+Details_gatherer=(StateGraph(AgentState)
+                  .add_node('details_gatherer',call_details_gatherer)
+                  .add_node('d_tools',d_tools)
+
+                  .add_conditional_edges('details_gatherer',
+                                         should_continue_details_gatherer,
+                                         [
+                                             'd_tools',END
+                                         ]
+                                         )
+                  .add_edge('d_tools','details_gatherer')
+                  .add_edge(START,'details_gatherer')
+                  ).compile()
 
 @traceable(name="SupabaseRetriever")
 class SupabaseRetriever(Runnable):
@@ -82,7 +258,7 @@ contextualize_system_prompt=(
 qa_system_prompt = (
     "You are a superb assistant who can help customers to book hotels according to their preferences. "
     "Use the following pieces of retrieved context to answer the question. "
-    "List ALL hotels with cabin room types explicitly if the user requests cabin hotels. "
+    "List ALL hotels according to the user's preferences "
     "If you don't know, say so politely. Be concise but ensure you include all requested hotels."
     "\n\n{context}"
 )
@@ -105,6 +281,7 @@ qa_system_template=ChatPromptTemplate.from_messages(messages1)
 question_answer_chain=create_stuff_documents_chain(model,qa_system_template)
 
 retriever=SupabaseRetriever()
+
 history_aware_retriever=create_history_aware_retriever(model,retriever,contextualize_system_template)
 rag_chain=create_retrieval_chain(history_aware_retriever,question_answer_chain)
 
@@ -117,194 +294,190 @@ from pydantic import BaseModel
 class ToolInput(BaseModel):
     input: str
 
+rag_tools=[
+    Tool(
+        name="HotelsInfoTool",
+        func=lambda input,**kwargs:rag_chain.invoke({"input":input,"chat_history":kwargs.get("chat_history",[])}),
+        description="useful for when you need to retrieve hotels or answer the questions or information about the hotels",
+        args_schema=ToolInput
 
-class AgentState(TypedDict):
-    messages:Annotated[Sequence[BaseMessage],add_messages]
-    room_type:str
-    amenities:list[str]
-    
-## For asking details
-def ask_room_type(state:AgentState)->AgentState:
-    """This asks the user for their preference of their room type"""
-    print(f"AI: Welcome! To help you find the perfect stay, could you please let me know your preferred type of room?")
-    user_input=input("You: ")
-    state['room_type']=user_input
-    return state
+    ),update_state
+]
 
-
-
-def ask_amenities(state:AgentState)->AgentState:
-    """This asks the user for their preference of amenities"""
-    print(f"AI: Thank you! Could you also please specify any amenities or inclusions you would like during your stay?")
-    user_input=input("You: ")
-    state['amenities']=[a.strip() for a in user_input.split(',')]
-    return state
-
-@tool 
-def generate_sentence(room_type:str,amenities:list[str]):
-    """Creates a query with respect to the room_types and amenities provided"""
-    system_message="Create a query with respect to the room_types and amenities provided which will be the most efficient in finding the hotels with the required specifics and only return the final senetence no additional words"
-    message_query=SystemMessage(content=system_message)
-    query=HumanMessage(content=f'Room_type:{room_type}, Amenities:{amenities}')
-    message=[message_query]+[query]
-    query=model.invoke(message)
-    return query
-
-
-tools_1=[generate_sentence]
-
-model.bind_tools(tools_1)
-
-def model_call(state: AgentState) -> AgentState:
-    system_prompt = SystemMessage(content="You are my assistant who helps me to create a sentence in natural language " \
-    "that will help query hotels based on the given room type and amenities.")
-    
-    query_input = f"Room type: {state['room_type']}, Amenities: {', '.join(state['amenities'])}"
-    user_message = HumanMessage(content=query_input)
-    
-    response = model.invoke([system_prompt, user_message])
-    
-    return {
-        "messages": state["messages"] + [user_message, response],
-        "room_type": state["room_type"],
-        "amenities": state["amenities"]
-    }
-
-tools_dict_model = {our_tool.name: our_tool for our_tool in tools_1}
-
-def take_action_model(state:AgentState)->AgentState:
-    """Execute tool calls from llm's response"""
-
-    tool_calls=state['messages'][-1].tool_calls
-    results=[]
-    for t in tool_calls:
-        print(f"Calling Tool: {t['name']} ")
-
-        if not t['name'] in tools_dict_model :
-            print(f"\nTool: {t['name']} does not exist.")
-            result = "Incorrect Tool Name, Please Retry and Select tool from List of Available tools."
-        
-        else:
-            result = tools_dict_model[t['name']].invoke(t['args'].get('query', ''))
-            print(f"Result length: {len(str(result))}")
-            
-
-        
-        results.append(ToolMessage(tool_call_id=t['id'], name=t['name'], content=str(result)))
-
-    print("Tools Execution Complete. Back to the model!")
-    return {
-        'messages': state["messages"] + results,
-        'room_type': state["room_type"],
-        'amenities': state["amenities"]
-    }
-
-def should_continue(state:AgentState):
+def should_continue_rag_agent(state:AgentState):
     """Check if the last message contains tool calls"""
     result=state['messages'][-1]
     return hasattr(result,'tool_calls') and len(result.tool_calls)>0
 
 system_prompt = """
-You are an intelligent hotel booking assistant. 
-Use the HotelsInfoTool to answer questions about hotels.
-Always pass the user’s query as the 'input' argument when calling this tool.
+    You are an intelligent hotel booking assistant. 
+    Use the HotelsInfoTool to list all the best hotels according to the users preferences around 4-5 hotels or more(Dont give unrelated hotels). Near by ones to the location is also good.
+    Always pass the user’s query as the 'input' argument when calling this tool.
+    ** After/while giving the hotels option's to the user call the 'update_state' tool and update the hotel_list state with the supabase hotel_id's of the retrived hotels.
+    ** only when displaying the hotel's list call the 'update_state' tool and put show_hotel_list to true otherwise false.
+    ** Just display all the hotel relevant name as the 'AI Message'.No asterisk.
+    """
+
+chat_history=ConversationBufferWindowMemory(memory_key="chat_history",k=10,return_messages=True)
+
+initial_message=("You are an AI assistant that can provide helpful answers using avaliable tools")
+
+chat_history.chat_memory.add_message(SystemMessage(content=initial_message))
+
+def call_rag_agent(state: AgentState) -> AgentState:
+    messages = list(state['messages'])
+    chat_hist = state.get("chat_history", [])
+    rag_model=model.bind_tools(rag_tools)
+    messages = [SystemMessage(content=system_prompt)] + chat_hist + messages
+    message = rag_model.invoke(messages)
+    return {**state,'messages': [message], 'chat_history': chat_hist}
+
+rag_tool_node = ToolNode(tools=rag_tools)
+
+Rag_agent=(StateGraph(AgentState)
+           .add_node('Rag_agent',call_rag_agent)
+           .add_node('rag_tools',rag_tool_node)
+           .add_conditional_edges(
+               'Rag_agent',
+               should_continue_rag_agent,
+               {
+                   True:'rag_tools',
+                   False:END
+               }
+           )
+
+           .add_edge('rag_tools','Rag_agent')
+           .set_entry_point('Rag_agent')
+           ).compile()
+
+Booking_agent_prompt="""
+    You are an Helpful assistant who helps to confirm and book the hotels.
+
+    Always collect all the following information from them:
+
+    - The room type they want.
+
+    ** After the user selects the hotel, call the 'update_state' tool and update the selected_hotel_name state with the hotel name and the selected_hotel_location with the hotel's location.
+    ** After the user selects the room type, call the 'update_state' tool and update the selected_room_name state.
+    ** Always call the 'update_state' tool and change the show_hotel_list's state to 'FALSE'.
+    Say thank you for the selection or something like that.
 """
 
 
-## rag
+Booking_agent_tools=ToolNode([update_state])
 
-tools_rag=[
-    Tool(
-        name="HotelsInfoTool",
-        func=lambda input,**kwargs:rag_chain.invoke({"input":input,"chat_history":kwargs.get("chat_history",[])}),
-        description="useful for when you need to answer the questions or information about the hotels",
-        args_schema=ToolInput
+def call_booking_agent(state:AgentState):
+    messages=state['messages']
+    messages=[SystemMessage(content=Booking_agent_prompt)]+messages
+    Booking_Agent_model=model.bind_tools([update_state])
+    response=Booking_Agent_model.invoke(messages)
+    return {**state,'messages':state['messages']+[response]}
 
-    )
-]
+def should_continue_booking_agent(state:AgentState):
+    """Ckeck if contains tool_calls"""
+    last_messages=state['messages'][-1]
+    if last_messages.tool_calls:
+        return 'Booking_agent_tools'
+    return END
 
-rag_model=model.bind_tools(tools_rag)
+BookingAgent=(StateGraph(AgentState)
+              .add_node('BookingAgent',call_booking_agent)
+              .add_node('Booking_agent_tools',Booking_agent_tools)
+              .add_conditional_edges('BookingAgent',
+                                     should_continue_booking_agent,
+                                     {
+                                        'Booking_agent_tools',
+                                        END
+                                     })
+              .add_edge('Booking_agent_tools','BookingAgent')
+              .set_entry_point('BookingAgent')
+              ).compile()
 
-tools_dict_rag = {our_tool.name: our_tool for our_tool in tools_rag}
+class Router(BaseModel):
+    next:Literal[
+        "DetailsGatherer",
+        "HotelSearchRAGAgent",
+        "BookingAgent"
+    ]
+    reasoning:str
 
-def call_llm_rag(state: AgentState) -> AgentState:
-    """Function to call the LLM with the current state."""
-    messages = list(state['messages'])
-    messages = [SystemMessage(content=system_prompt)] + state['messages']+messages
-    message = rag_model.invoke(messages)
-    return {'messages': [message],'chat_history': state['messages']}
+router_prompt = """You are an intelligent routing assistant for a hotel booking AI system.
 
-def take_action_rag(state: AgentState) -> AgentState:
-    """Execute tool calls from the LLM's response."""
+Given the conversation so far, your job is to determine which of the following actions the system should take next:
 
-    tool_calls = state['messages'][-1].tool_calls
-    results = []
-    for t in tool_calls:
-        tool_name = t['name']
-        tool_input = t['args'].get('input', 'No input provided')  
-        print(f"Calling Tool: {tool_name} with input: {tool_input}")
-        
-        if not t['name'] in tools_dict_rag: 
-            print(f"\nTool: {t['name']} does not exist.")
-            raw_result = "Incorrect Tool Name, Please Retry and Select tool from List of Available tools."
-        
-        else:
-            raw_result = tools_dict_rag[tool_name].invoke(
-            tool_input,
-            chat_history=state['messages']
-            )
-            print(f"\n\n{raw_result}")
-            print(f"Result length: {len(str(raw_result))}")
-            
-            if isinstance(raw_result, dict):
-                answer = raw_result.get("answer", str(raw_result))
-            else:
-                answer = str(raw_result)
-        
-        results.append(ToolMessage(tool_call_id=t['id'], name=t['name'], content=answer))
+- 'DetailsGatherer': Collect the destination,specific destination,budget, number of children, number of adults, check in date, check out date.
+ (call the next agent only after all the above infromation has been specified.)
+- 'HotelSearchRAGAgent': If the user has provided sufficient details to search for hotels and wants recommendations.
+- 'BookingAgent': If the user has chosen a hotel and is ready to proceed with booking and for selecting the room type.
 
-    print("Tools Execution Complete. Back to the model!")
-    return {'messages':state['messages'] +results,'chat_history': state['messages']}
+Respond with ONLY the name of the action to take next, and nothing else.
+"""
 
+def ai_router(state:AgentState):
+    messages=state['messages']
+    message=model.with_structured_output(Router).invoke(messages)
+    required_fields = [
+        state.get("destination"),
+        # state.get("specific_destination"),
+        state.get("num_children"),
+        state.get("num_adults"),
+        state.get("budget"),
+        state.get("check_in_date"),
+        state.get("check_out_date")
+    ]
+
+    if not all(required_fields):
+        return {"step": "DetailsGatherer"}
+    else:
+        return {'step':message.next}
+
+def router_supervisor(state:AgentState):
+    return state['step']
 
 graph=StateGraph(AgentState)
+graph.add_node('DetailsGatherer',Details_gatherer)
+graph.add_node("HotelSearchRAGAgent", Rag_agent)
+graph.add_node("BookingAgent", BookingAgent)
+graph.add_node('Router',ai_router)
 
-graph.add_node("ask room",ask_room_type)
-graph.add_node("ask amenities",ask_amenities)
-graph.add_node("model",model_call)
-graph.add_node('sentence creator',take_action_model)
-graph.add_node('rag_model',call_llm_rag)
-graph.add_node('hotel_agent',take_action_rag)
+graph.add_conditional_edges('Router',
+                            router_supervisor,
+                            {
+                                "DetailsGatherer": "DetailsGatherer",
+                                "HotelSearchRAGAgent": "HotelSearchRAGAgent",
+                                "BookingAgent": "BookingAgent",
+                            })
 
-graph.add_edge('ask room','ask amenities')
-graph.add_edge('ask amenities','model')
-graph.add_edge('model','sentence creator')
-graph.add_edge('sentence creator','rag_model')
-graph.add_edge('rag_model','hotel_agent')
-graph.add_conditional_edges(
-    "rag_model",
-    should_continue,
-    {True: "hotel_agent", False: END}
-)
+graph.add_edge(START,'Router')
+graph.add_edge("DetailsGatherer", END)
+graph.add_edge("HotelSearchRAGAgent", END)
+graph.add_edge("BookingAgent", END)
 
-
-graph.set_entry_point('ask room')
-
-app=graph.compile()
+agent=graph.compile()
 
 
-# def run_agent():
-#     print("Welcome to the Hotel Assistant!")
-#     initial_state = {
-#         "messages": [],
-#         "room_type": "",
-#         "amenities": [],     
-#     }
 
-#     result = app.invoke(initial_state)
-#     final_msg = result["messages"][-1].content.strip() if result["messages"] else "No final message"
-#     print("\n=== FINAL OUTPUT ===")
-#     print(final_msg)
+# def running_agent():
+#     chat_history = []  # optional: preserve history over turns
+#     print("Type 'exit' or 'quit' to end the chat.")
 
-# run_agent()
+#     while True:
+#         user_input = input("\nYou: ")
+#         if user_input.lower() in ['exit', 'quit']:
+#             break
 
+#         user_msg = HumanMessage(content=user_input)
+#         chat_history.append(user_msg)
+
+#         response = agent.invoke({
+#             "messages": chat_history,
+#             "chat_history": chat_history,
+#         })
+
+#         # Update history with latest AI message
+#         ai_msg = response["messages"][-1]
+#         chat_history.append(ai_msg)
+
+#         print(f"\nAI: {ai_msg.content}")
+
+# running_agent()

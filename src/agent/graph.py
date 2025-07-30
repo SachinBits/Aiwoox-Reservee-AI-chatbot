@@ -65,7 +65,7 @@ class AgentState(TypedDict,total=False):
     show_room_list:bool #new
     step:str 
 
-detail_gatherer_template = """
+detail_gatherer_template = f"""
 Your job is to get detailed information from a user about the location they want to visit as well as call the 'update_state' tool and set the 'show_hotel_list' to 'FALSE'.
 
 Always collect all the following information from them:
@@ -76,7 +76,7 @@ Always collect all the following information from them:
 - The number of adults, 'num_adults'
 - Their budget for the trip, 'budget'
 - Their 'check_in_date' 
-- Their 'check_out_date'
+- Their 'check_out_date' 
 
 ** always ask one question at a time 
 
@@ -84,11 +84,13 @@ Ask the above details one by one, and if they are not sure about specific destin
 
 ** If the user is not sure about any of the above details and you have already asked them about it when calling the 'update_tool' update that parameter with 'to-be-decided'
 ** Dont update any state with the number 0 instead put the string 'zero'.
-** After collecting all the details just say thanks for the information. would you like me to get the hotels according to your preferences.
+** Once all required details are gathered, do not say 'Thank you' or ask for confirmation. Immediately proceed to the next step/tool.
 If the user provides all or part of this information in one attempt (e.g., "We want to go to Los Angeles, USA with 2 adults and 1 child, our budget is $1500, check-in on July 5, check-out on July 10"), you should decode and extract these details clearly.
 ** Always call the 'update_state' tool and change the show_hotel_list's state to 'FALSE'.
 If you are not able to discern any of this information, ask them to clarify politely. Do not attempt to wildly guess missing details.
 ** Always answer in natural language no technical terms
+** If the user gives a relative date like "next Thursday", use the `parse_date` tool. If it fails to parse, ask them again for a valid calendar date.
+
 Once you have gathered **all** of the required information, call the relevant tool with the structured data you have extracted.
 """
 
@@ -96,6 +98,7 @@ Once you have gathered **all** of the required information, call the relevant to
 def parse_date(
     date_input:Union[int,str]=None,
     field:str=None,
+    reference_date:str=None,
     tool_call_id:Annotated[str,InjectedToolCallId]=None
 ):
     """
@@ -103,10 +106,19 @@ def parse_date(
     Input: date_input:The date given by the user, field:The state to update the converted date_input into 
     Output: Confirmation message that the state has been updated.
     """
+
+    base=datetime.now()
+    if reference_date:
+        try:
+            base=datetime.strptime(reference_date, "%Y-%m-%d")
+        except Exception:
+            pass
+
+    
     parsed=dateparser.parse(str(date_input),
                             settings={
                                 'PREFER_DATES_FROM':'future',
-                                'RELATIVE_BASE':datetime.now()
+                                'RELATIVE_BASE':base
                             })
 
     if parsed is None:
@@ -186,7 +198,26 @@ def update_state(
 
 d_tools=ToolNode([update_state,parse_date])
 
+def check_primary_details(state:AgentState)->bool:
+    """
+    Check if all the primary details are present in the state. """
+    required_fields = [
+        state.get("destination"),
+        # state.get("specific_destination"),
+        state.get("num_children"),
+        state.get("num_adults"),
+        state.get("budget"),
+        state.get("check_in_date"),
+        state.get("check_out_date")
+    ]
+    if all(required_fields):
+        return True
+    return False
+
 def call_details_gatherer(state:AgentState):
+    if check_primary_details(state):
+        return state
+    
     messages=state['messages']
     d_model=model.bind_tools([update_state,parse_date])
     messages=[SystemMessage(content=detail_gatherer_template)]+messages
@@ -200,9 +231,17 @@ def should_continue_details_gatherer(state:AgentState):
     """check if the last message contains tool calls"""
     messages=state['messages']
     last_message=messages[-1]
-    if last_message.tool_calls:
+    if isinstance(last_message, AIMessage) and getattr(last_message, "tool_calls", None):
         return 'd_tools'
     return END
+
+def details_gatherer_supervisor(state:AgentState):
+    
+    if check_primary_details(state):
+        # Do NOT generate any AI message, just proceed to hotel search
+        return 'HotelSearchRAGAgent'
+    else:
+        return END
 
 Details_gatherer=(StateGraph(AgentState)
                   .add_node('details_gatherer',call_details_gatherer)
@@ -426,10 +465,17 @@ def ai_router(state:AgentState):
         state.get("check_out_date")
     ]
 
+    # missing_fields=[field for field in required_fields if not field ]
+
     if not all(required_fields):
         return {"step": "DetailsGatherer"}
     else:
         return {'step':message.next}
+
+    # if len(missing_fields)>1:
+    #     return {"step": "DetailsGatherer"}
+    # else:
+    #     return {'step':message.next}
 
 def router_supervisor(state:AgentState):
     return state['step']
@@ -448,8 +494,16 @@ graph.add_conditional_edges('Router',
                                 "BookingAgent": "BookingAgent",
                             })
 
+graph.add_conditional_edges('DetailsGatherer',
+                            details_gatherer_supervisor,
+                            {
+                                "HotelSearchRAGAgent": "HotelSearchRAGAgent",
+                                END:END
+                            })
+
 graph.add_edge(START,'Router')
-graph.add_edge("DetailsGatherer", END)
+# graph.add_edge("DetailsGatherer", "HotelSearchRAGAgent")
+# graph.add_edge("DetailsGatherer", END)
 graph.add_edge("HotelSearchRAGAgent", END)
 graph.add_edge("BookingAgent", END)
 
