@@ -41,9 +41,8 @@ embeddings=AzureOpenAIEmbeddings(
     azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME1")
 )
 
-url = "https://plxwdqmqiaxrdwlcmzdc.supabase.co"
-key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBseHdkcW1xaWF4cmR3bGNtemRjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTI3NjU5NCwiZXhwIjoyMDY2ODUyNTk0fQ.KqZeNmr6pMrUNzPxlLwgDqABBOjBq9bB6IgL3CEFZLw"
-
+url = os.getenv("supabase_url")
+key = os.getenv('supabase_key')
 supabase :Client =create_client(url,key)
 
 class AgentState(TypedDict,total=False):
@@ -54,19 +53,17 @@ class AgentState(TypedDict,total=False):
     selected_hotel_name:str
     selected_hotel_id:int #new
     selected_hotel_location:str
+    selected_room_name:str #new
     num_children:Union[int,str]
     num_adults:Union[int,str]
     budget:Union[int,str]
-    check_in_date:str
-    check_out_date:str
+    check_in_date: str
+    check_out_date: str
     hotel_list:list[int]
     room_list:list[int] #new
     show_hotel_list:bool
     show_room_list:bool #new
     step:str 
-
-
-
 
 detail_gatherer_template = """
 Your job is to get detailed information from a user about the location they want to visit as well as call the 'update_state' tool and set the 'show_hotel_list' to 'FALSE'.
@@ -78,7 +75,7 @@ Always collect all the following information from them:
 - The number of children, 'num_children'
 - The number of adults, 'num_adults'
 - Their budget for the trip, 'budget'
-- Their 'check_in_date'
+- Their 'check_in_date' 
 - Their 'check_out_date'
 
 ** always ask one question at a time 
@@ -91,7 +88,7 @@ Ask the above details one by one, and if they are not sure about specific destin
 If the user provides all or part of this information in one attempt (e.g., "We want to go to Los Angeles, USA with 2 adults and 1 child, our budget is $1500, check-in on July 5, check-out on July 10"), you should decode and extract these details clearly.
 ** Always call the 'update_state' tool and change the show_hotel_list's state to 'FALSE'.
 If you are not able to discern any of this information, ask them to clarify politely. Do not attempt to wildly guess missing details.
-
+** Always answer in natural language no technical terms
 Once you have gathered **all** of the required information, call the relevant tool with the structured data you have extracted.
 """
 
@@ -106,7 +103,11 @@ def parse_date(
     Input: date_input:The date given by the user, field:The state to update the converted date_input into 
     Output: Confirmation message that the state has been updated.
     """
-    parsed=dateparser.parse(str(date_input))
+    parsed=dateparser.parse(str(date_input),
+                            settings={
+                                'PREFER_DATES_FROM':'future',
+                                'RELATIVE_BASE':datetime.now()
+                            })
 
     if parsed is None:
         return Command(update={
@@ -118,7 +119,7 @@ def parse_date(
     formatted = parsed.strftime("%Y-%m-%d")
     return Command(update={
         "messages": [
-            ToolMessage(
+            ToolMessage(    
                 content=f"Parsed date: {formatted}",
                 tool_call_id=tool_call_id,
             )
@@ -133,11 +134,12 @@ def update_state(
     specific_destination:str=None,
     selected_hotel_name:str=None,
     selected_hotel_location:str=None,
+    selected_room_name:str=None,
     num_children:Union[int,str]=None,
     num_adults:Union[int,str]=None,
     budget:Union[int,str]=None,
-    check_in_date:str=None,
-    check_out_date:str=None,
+    # check_in_date:str=None,
+    # check_out_date:str=None,
     hotel_list:list[int]=None,
     show_hotel_list:bool=None,
     tool_call_id: Annotated[str, InjectedToolCallId] = None,
@@ -159,10 +161,10 @@ def update_state(
         updated_state['num_children']=num_children
     if num_adults is not None:
         updated_state['num_adults']=num_adults
-    if check_in_date is not None:
-        updated_state['check_in_date']=check_in_date
-    if check_out_date is not None:
-        updated_state['check_out_date']=check_out_date
+    # if check_in_date is not None:
+    #     updated_state['check_in_date']=check_in_date
+    # if check_out_date is not None:
+    #     updated_state['check_out_date']=check_out_date
     if selected_hotel_name is not None:
         updated_state['selected_hotel_name']=selected_hotel_name
     if selected_hotel_location is not None:
@@ -171,7 +173,8 @@ def update_state(
         updated_state['hotel_list']=hotel_list
     if show_hotel_list is not None:
         updated_state['show_hotel_list']=show_hotel_list
-
+    if selected_room_name is not None:
+        updated_state['selected_hotel_name']=selected_room_name
     updated_state["messages"] = [
         ToolMessage(
             content="State updated successfully.",
@@ -312,7 +315,7 @@ system_prompt = """
     Always pass the user’s query as the 'input' argument when calling this tool.
     ** After/while giving the hotels option's to the user call the 'update_state' tool and update the hotel_list state with the supabase hotel_id's of the retrived hotels.
     ** only when displaying the hotel's list call the 'update_state' tool and put show_hotel_list to true otherwise false.
-    ** Just display all the hotel relevant names(in list 1. 2. 3. so on) as the 'AI Message'.
+    ** Just display all the hotel relevant name as the 'AI Message'.No asterisk.
     """
 
 chat_history=ConversationBufferWindowMemory(memory_key="chat_history",k=10,return_messages=True)
@@ -349,8 +352,15 @@ Rag_agent=(StateGraph(AgentState)
 
 Booking_agent_prompt="""
     You are an Helpful assistant who helps to confirm and book the hotels.
+
+    Always collect all the following information from them:
+
+    - The room type they want.
+
     ** After the user selects the hotel, call the 'update_state' tool and update the selected_hotel_name state with the hotel name and the selected_hotel_location with the hotel's location.
+    ** After the user selects the room type, call the 'update_state' tool and update the selected_room_name state.
     ** Always call the 'update_state' tool and change the show_hotel_list's state to 'FALSE'.
+    Say thank you for the selection or something like that.
 """
 
 
@@ -398,7 +408,7 @@ Given the conversation so far, your job is to determine which of the following a
 - 'DetailsGatherer': Collect the destination,specific destination,budget, number of children, number of adults, check in date, check out date.
  (call the next agent only after all the above infromation has been specified.)
 - 'HotelSearchRAGAgent': If the user has provided sufficient details to search for hotels and wants recommendations.
-- 'BookingAgent': If the user has chosen a hotel and is ready to proceed with booking.
+- 'BookingAgent': If the user has chosen a hotel and is ready to proceed with booking and for selecting the room type.
 
 Respond with ONLY the name of the action to take next, and nothing else.
 """
@@ -469,6 +479,5 @@ agent=graph.compile()
 #         chat_history.append(ai_msg)
 
 #         print(f"\nAI: {ai_msg.content}")
-
 
 # running_agent()
