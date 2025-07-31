@@ -206,21 +206,37 @@ def follow_up(state:AgentState):
     output=Confirmation message that the state has been updated.
     """
     messages=state.get('messages',[])
-    follow_up_prompt="""
-    You are an AI assistant helping a user with hotel booking.
+    follow_up_prompt = """
+You are an AI assistant helping a user book a hotel.
 
-Based on the chat history and the user's last message, generate 3 concise follow-up questions or comments that the user might ask next.
-** try to focus the point of view of the user, not the assistant.
-- If the last user message is a greeting or unrelated to hotel booking, respond with a friendly greeting.
-- While gathering the user's information, try to guess the answer that might be next. 
-** Make it 3-5 words max.
-- Do NOT generate questions that the assistant should be asking to gather missing info.
-- Instead, generate questions or comments that the user might ask about hotel options, booking details, or related concerns.
-- Ensure the questions are relevant to the user's current booking context.
-- Avoid repeating information already given in the chat history."""
+Based on the full conversation and especially the user's most recent message, generate 3 concise and relevant **responses** that the **user might say next**.
+
+These responses should:
+- Reflect the user's likely next step, preference, or doubt.
+- Guess what the user might answer to the previous AI message
+- Be **from the user’s perspective**, not the assistant’s.
+- Be short (3-5 words max).
+- Include **related concerns or clarifications** the user might raise at this point in the conversation.
+
+Examples include:
+- Location (Suggest locations like "Paris" or "New York")
+- the Ai asks budget (Respond with "Under $200" or "Around $1000")
+- If hotel is retrieved (respond with question like "What are the amenities?" or something like "Show me more options")
+- Asking about specific hotel facilities ("Do they have Wi-Fi?")
+- Inquiring about pricing or rooms ("Is breakfast included?")
+- Providing missing booking details ("Check-in on August 10")
+- Confirming earlier choices ("Yes, 2 adults and 1 kid")
+- Changing decisions ("Can we change location?")
+- Expressing confusion or hesitation ("I’m not sure yet")
+
+Only generate relevant, realistic next user responses. If the user greeted or asked something off-topic, respond with a **friendly user response** (like "Hi there!" or "Just browsing, thanks").
+Avoid assistant-style phrasing or technical terms.
+"""
+
     messages=[SystemMessage(content=follow_up_prompt)]+messages
+    # print(f"Messages for follow_up tool: {messages}")
     response=model.invoke(messages)
-    print(f"Response from follow_up tool: {response}")
+    # print(f"Response from follow_up tool: {response}")
     if isinstance(response,AIMessage):
         follow_up_questions=response.content.split('\n')
         follow_up_questions=[q.strip() for q in follow_up_questions if q.strip()]
@@ -440,7 +456,7 @@ Booking_agent_prompt="""
     ** After the user selects the room type, call the 'update_state' tool and update the selected_room_name state.
     ** Always call the 'update_state' tool and change the show_hotel_list's state to 'FALSE'.
     ** Always call the follow up tool after every human input to generate follow up questions.
-    Say thank you for the selection or something like that.
+    Say thank you for the selection or something like that dont say would you like me to proceed with the booking just say thank you after selection of all the details.
 """
 
 
