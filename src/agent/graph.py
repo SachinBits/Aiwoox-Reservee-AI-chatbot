@@ -21,8 +21,7 @@ from langgraph.types import Command
 from langgraph.prebuilt import ToolNode
 import dateparser
 from datetime import datetime
-
-
+import uuid
 load_dotenv()
 
 model=AzureChatOpenAI(
@@ -64,6 +63,7 @@ class AgentState(TypedDict,total=False):
     show_hotel_list:bool
     show_room_list:bool #new
     step:str 
+    follow_up:list[str] #follow up questions
 
 detail_gatherer_template = f"""
 Your job is to get detailed information from a user about the location they want to visit as well as call the 'update_state' tool and set the 'show_hotel_list' to 'FALSE'.
@@ -89,6 +89,7 @@ If the user provides all or part of this information in one attempt (e.g., "We w
 ** Always call the 'update_state' tool and change the show_hotel_list's state to 'FALSE'.
 If you are not able to discern any of this information, ask them to clarify politely. Do not attempt to wildly guess missing details.
 ** Always answer in natural language no technical terms
+** Always call the follow up tool after every human input to generate follow up questions.
 ** If the user gives a relative date like "next Thursday", use the `parse_date` tool. If it fails to parse, ask them again for a valid calendar date.
 
 Once you have gathered **all** of the required information, call the relevant tool with the structured data you have extracted.
@@ -139,7 +140,6 @@ def parse_date(
         field: formatted,
     })
 
-
 @tool
 def update_state(
     destination:str=None,
@@ -187,6 +187,8 @@ def update_state(
         updated_state['show_hotel_list']=show_hotel_list
     if selected_room_name is not None:
         updated_state['selected_hotel_name']=selected_room_name
+
+    
     updated_state["messages"] = [
         ToolMessage(
             content="State updated successfully.",
@@ -195,6 +197,40 @@ def update_state(
     ]
 
     return Command(update=updated_state)
+
+
+def follow_up(state:AgentState):
+    """
+    Creates follow up question for the user based on the last message
+    input=the complete chat history including the last user message which is the state 'messages'
+    output=Confirmation message that the state has been updated.
+    """
+    messages=state.get('messages',[])
+    follow_up_prompt="""
+    You are an AI assistant helping a user with hotel booking.
+
+Based on the chat history and the user's last message, generate 3 concise follow-up questions or comments that the user might ask next.
+** try to focus the point of view of the user, not the assistant.
+- If the last user message is a greeting or unrelated to hotel booking, respond with a friendly greeting.
+- While gathering the user's information, try to guess the answer that might be next. 
+** Make it 3-5 words max.
+- Do NOT generate questions that the assistant should be asking to gather missing info.
+- Instead, generate questions or comments that the user might ask about hotel options, booking details, or related concerns.
+- Ensure the questions are relevant to the user's current booking context.
+- Avoid repeating information already given in the chat history."""
+    messages=[SystemMessage(content=follow_up_prompt)]+messages
+    response=model.invoke(messages)
+    print(f"Response from follow_up tool: {response}")
+    if isinstance(response,AIMessage):
+        follow_up_questions=response.content.split('\n')
+        follow_up_questions=[q.strip() for q in follow_up_questions if q.strip()]
+        # updated_state['follow_up']=follow_up_questions
+        # tool_msg=ToolMessage(content='Follow Up Generated',tool_call_id=str(uuid.uuid4()))
+        # updated_state['messages']=[tool_msg]
+    # else:
+        # tool_msg=ToolMessage(content='Follow Up not Generated',tool_call_id=str(uuid.uuid4()))
+        # updated_state['messages']=[tool_msg]
+    return Command(update={**state, 'follow_up':follow_up_questions})
 
 d_tools=ToolNode([update_state,parse_date])
 
@@ -222,9 +258,11 @@ def call_details_gatherer(state:AgentState):
     d_model=model.bind_tools([update_state,parse_date])
     messages=[SystemMessage(content=detail_gatherer_template)]+messages
     response=d_model.invoke(messages)
-    location=state.get('destination','')
-    spec_loc=state.get('specific_destination')
-    print(f'destination:{location} specific location:{spec_loc}')
+    # messages=state['messages']+[response]
+    # follow_up(messages)
+    # location=state.get('destination','')
+    # spec_loc=state.get('specific_destination')
+    # print(f'destination:{location} specific location:{spec_loc}')
     return {"messages": state["messages"] + [response]}
 
 def should_continue_details_gatherer(state:AgentState):
@@ -241,7 +279,7 @@ def details_gatherer_supervisor(state:AgentState):
         # Do NOT generate any AI message, just proceed to hotel search
         return 'HotelSearchRAGAgent'
     else:
-        return END
+        return 'follow_up'
 
 Details_gatherer=(StateGraph(AgentState)
                   .add_node('details_gatherer',call_details_gatherer)
@@ -249,10 +287,12 @@ Details_gatherer=(StateGraph(AgentState)
 
                   .add_conditional_edges('details_gatherer',
                                          should_continue_details_gatherer,
-                                         [
-                                             'd_tools',END
-                                         ]
+                                         {
+                                            'd_tools':'d_tools',
+                                            END:END
+                                         }
                                          )
+                  
                   .add_edge('d_tools','details_gatherer')
                   .add_edge(START,'details_gatherer')
                   ).compile()
@@ -355,6 +395,7 @@ system_prompt = """
     ** After/while giving the hotels option's to the user call the 'update_state' tool and update the hotel_list state with the supabase hotel_id's of the retrived hotels.
     ** only when displaying the hotel's list call the 'update_state' tool and put show_hotel_list to true otherwise false.
     ** Just display all the hotel relevant name as the 'AI Message'.No asterisk.
+    ** Always call the follow up tool after every human input to generate follow up questions.
     """
 
 chat_history=ConversationBufferWindowMemory(memory_key="chat_history",k=10,return_messages=True)
@@ -369,7 +410,7 @@ def call_rag_agent(state: AgentState) -> AgentState:
     rag_model=model.bind_tools(rag_tools)
     messages = [SystemMessage(content=system_prompt)] + chat_hist + messages
     message = rag_model.invoke(messages)
-    return {**state,'messages': [message], 'chat_history': chat_hist}
+    return Command(update={**state,'messages': [message], 'chat_history': chat_hist})
 
 rag_tool_node = ToolNode(tools=rag_tools)
 
@@ -384,21 +425,21 @@ Rag_agent=(StateGraph(AgentState)
                    False:END
                }
            )
-
            .add_edge('rag_tools','Rag_agent')
            .set_entry_point('Rag_agent')
            ).compile()
 
 Booking_agent_prompt="""
     You are an Helpful assistant who helps to confirm and book the hotels.
-
-    Always collect all the following information from them:
+     
+    Always be sure to collect all the following information from them:
 
     - The room type they want.
 
     ** After the user selects the hotel, call the 'update_state' tool and update the selected_hotel_name state with the hotel name and the selected_hotel_location with the hotel's location.
     ** After the user selects the room type, call the 'update_state' tool and update the selected_room_name state.
     ** Always call the 'update_state' tool and change the show_hotel_list's state to 'FALSE'.
+    ** Always call the follow up tool after every human input to generate follow up questions.
     Say thank you for the selection or something like that.
 """
 
@@ -428,6 +469,7 @@ BookingAgent=(StateGraph(AgentState)
                                         'Booking_agent_tools',
                                         END
                                      })
+              
               .add_edge('Booking_agent_tools','BookingAgent')
               .set_entry_point('BookingAgent')
               ).compile()
@@ -480,12 +522,14 @@ def ai_router(state:AgentState):
 def router_supervisor(state:AgentState):
     return state['step']
 
+
+
 graph=StateGraph(AgentState)
 graph.add_node('DetailsGatherer',Details_gatherer)
 graph.add_node("HotelSearchRAGAgent", Rag_agent)
 graph.add_node("BookingAgent", BookingAgent)
 graph.add_node('Router',ai_router)
-
+graph.add_node('follow_up', follow_up)
 graph.add_conditional_edges('Router',
                             router_supervisor,
                             {
@@ -498,14 +542,15 @@ graph.add_conditional_edges('DetailsGatherer',
                             details_gatherer_supervisor,
                             {
                                 "HotelSearchRAGAgent": "HotelSearchRAGAgent",
-                                END:END
+                                'follow_up': "follow_up"
                             })
 
 graph.add_edge(START,'Router')
 # graph.add_edge("DetailsGatherer", "HotelSearchRAGAgent")
 # graph.add_edge("DetailsGatherer", END)
-graph.add_edge("HotelSearchRAGAgent", END)
-graph.add_edge("BookingAgent", END)
+graph.add_edge("HotelSearchRAGAgent", 'follow_up')
+graph.add_edge("BookingAgent", 'follow_up')
+graph.add_edge('follow_up',END)
 
 agent=graph.compile()
 
