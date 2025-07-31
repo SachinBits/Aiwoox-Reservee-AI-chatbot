@@ -75,13 +75,17 @@ Always collect all the following information from them:
 - The number of children, 'num_children'
 - The number of adults, 'num_adults'
 - Their budget for the trip, 'budget'
-- Their 'check_in_date' 
+- Their 'check_in_date' (note:Even if its in 23-08-2010 format )
 - Their 'check_out_date' 
 
 ** always ask one question at a time 
 
 Ask the above details one by one, and if they are not sure about specific destination, you can update the state with unknown, dont ask them again.
-
+** if they i am alone or mean something like that, update the num_adults with 1 and num_children with zero.
+** If the user gives a relative or non-standard date (like 'next Friday' or '23-08-2025'), 
+first call `parse_date` with the correct `field` (e.g., "check_in_date"). 
+Only after that field is present in state, update anything else with `update_state`.
+Never call both tools at once for the same date field.
 ** If the user is not sure about any of the above details and you have already asked them about it when calling the 'update_tool' update that parameter with 'to-be-decided'
 ** Dont update any state with the number 0 instead put the string 'zero'.
 ** Once all required details are gathered, do not say 'Thank you' or ask for confirmation. Immediately proceed to the next step/tool.
@@ -150,8 +154,8 @@ def update_state(
     num_children:Union[int,str]=None,
     num_adults:Union[int,str]=None,
     budget:Union[int,str]=None,
-    # check_in_date:str=None,
-    # check_out_date:str=None,
+    check_in_date:str=None,
+    check_out_date:str=None,
     hotel_list:list[int]=None,
     show_hotel_list:bool=None,
     tool_call_id: Annotated[str, InjectedToolCallId] = None,
@@ -173,10 +177,10 @@ def update_state(
         updated_state['num_children']=num_children
     if num_adults is not None:
         updated_state['num_adults']=num_adults
-    # if check_in_date is not None:
-    #     updated_state['check_in_date']=check_in_date
-    # if check_out_date is not None:
-    #     updated_state['check_out_date']=check_out_date
+    if check_in_date is not None:
+        updated_state['check_in_date']=check_in_date
+    if check_out_date is not None:
+        updated_state['check_out_date']=check_out_date
     if selected_hotel_name is not None:
         updated_state['selected_hotel_name']=selected_hotel_name
     if selected_hotel_location is not None:
@@ -212,18 +216,28 @@ You are an AI assistant helping a user book a hotel.
 Based on the full conversation and especially the user's most recent message, generate 3 concise and relevant **responses** that the **user might say next**.
 
 These responses should:
+** alwys generate 2 responses
+- Be **short (2-4 words max)**.
+** if the ai asks a question, always generate 2 responses which the user might answer to the previous AI message.
+** if the ai_message has the hotel names or gives an option of hotels or if the hotels are retrieved, always put the hotels names that were given to the user as follow up responses.
+** If the ai asks about the room type, always generate 2 responses of room types which the user might answer to the previous AI message.
 - Reflect the user's likely next step, preference, or doubt.
 - Guess what the user might answer to the previous AI message
 - Be **from the user’s perspective**, not the assistant’s.
-- Be short (3-5 words max).
-- Include **related concerns or clarifications** the user might raise at this point in the conversation.
-
+** dont put number or quotes in the responses.
+** Be short (2-4 words max).
+** dont generate questions, just responses.
+** if hotel room is selected, generate 2 related questions.
 Examples include:
+- if askied about about children, generate responses like "2 children" or "1 child"
+- If asked about adults, generate responses like "2 adults" or "1 adult"
+- If greeting (Generae locations)
 - Location (Suggest locations like "Paris" or "New York")
 - the Ai asks budget (Respond with "Under $200" or "Around $1000")
 - If hotel is retrieved (respond with question like "What are the amenities?" or something like "Show me more options")
 - Asking about specific hotel facilities ("Do they have Wi-Fi?")
 - Inquiring about pricing or rooms ("Is breakfast included?")
+- If asking for check in or check out, always respond with the date in the format "YYYY-MM-DD" (e.g., "2025-08-10")
 - Providing missing booking details ("Check-in on August 10")
 - Confirming earlier choices ("Yes, 2 adults and 1 kid")
 - Changing decisions ("Can we change location?")
@@ -411,7 +425,6 @@ system_prompt = """
     ** After/while giving the hotels option's to the user call the 'update_state' tool and update the hotel_list state with the supabase hotel_id's of the retrived hotels.
     ** only when displaying the hotel's list call the 'update_state' tool and put show_hotel_list to true otherwise false.
     ** Just display all the hotel relevant name as the 'AI Message'.No asterisk.
-    ** Always call the follow up tool after every human input to generate follow up questions.
     """
 
 chat_history=ConversationBufferWindowMemory(memory_key="chat_history",k=10,return_messages=True)
@@ -448,6 +461,8 @@ Rag_agent=(StateGraph(AgentState)
 Booking_agent_prompt="""
     You are an Helpful assistant who helps to confirm and book the hotels.
      
+    ** Once the user has selected the hotel always ask them the room type they want.
+    ** If the user has selected a hotel, always ask them the room type they want.
     Always be sure to collect all the following information from them:
 
     - The room type they want.
@@ -455,7 +470,6 @@ Booking_agent_prompt="""
     ** After the user selects the hotel, call the 'update_state' tool and update the selected_hotel_name state with the hotel name and the selected_hotel_location with the hotel's location.
     ** After the user selects the room type, call the 'update_state' tool and update the selected_room_name state.
     ** Always call the 'update_state' tool and change the show_hotel_list's state to 'FALSE'.
-    ** Always call the follow up tool after every human input to generate follow up questions.
     Say thank you for the selection or something like that dont say would you like me to proceed with the booking just say thank you after selection of all the details.
 """
 
