@@ -440,7 +440,7 @@ def call_rag_agent(state: AgentState) -> AgentState:
     rag_model=model.bind_tools(rag_tools)
     messages = [SystemMessage(content=system_prompt)] + chat_hist + messages
     message = rag_model.invoke(messages)
-    return Command(update={**state,'messages': [message], 'chat_history': chat_hist})
+    return Command(update={**state,'messages': [message], 'chat_history': chat_hist,'follow_up': []})
 
 rag_tool_node = ToolNode(tools=rag_tools)
 
