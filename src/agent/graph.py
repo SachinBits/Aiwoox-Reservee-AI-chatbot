@@ -579,7 +579,7 @@ graph.add_conditional_edges('DetailsGatherer',
 graph.add_edge(START,'Router')
 # graph.add_edge("DetailsGatherer", "HotelSearchRAGAgent")
 # graph.add_edge("DetailsGatherer", END)
-graph.add_edge("HotelSearchRAGAgent", 'follow_up')
+graph.add_edge("HotelSearchRAGAgent", END)
 graph.add_edge("BookingAgent", 'follow_up')
 graph.add_edge('follow_up',END)
 
