@@ -113,6 +113,7 @@ def parse_date(
     """
 
     base=datetime.now()
+    print(f"ref:{base}")
     if reference_date:
         try:
             base=datetime.strptime(reference_date, "%Y-%m-%d")
@@ -424,7 +425,7 @@ system_prompt = """
     Always pass the user’s query as the 'input' argument when calling this tool.
     ** After/while giving the hotels option's to the user call the 'update_state' tool and update the hotel_list state with the supabase hotel_id's of the retrived hotels.
     ** only when displaying the hotel's list call the 'update_state' tool and put show_hotel_list to true otherwise false.
-    ** Just display all the hotel relevant name as the 'AI Message'.No asterisk.
+    ** Just display all the hotel relevant name as the 'AI Message'.Nothing else. No asterisk.
     """
 
 chat_history=ConversationBufferWindowMemory(memory_key="chat_history",k=10,return_messages=True)
