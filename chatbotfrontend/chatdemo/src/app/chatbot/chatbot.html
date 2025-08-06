@@ -1,0 +1,183 @@
+<div class="chatbot-container" [class.open]="isOpen">
+  <div class="chat-header">
+    <div class="details">
+      <img src="chatbot_profile.png" alt="Agent" style="height:32px;width:32px;" >
+      <div class="name-n-status">
+        <div class="header-title">Reservee</div>
+        <div class="header-status">• Online</div>
+      </div>
+    </div>
+    <div class="">
+          <button class="new-btn" (click)="newThread()">+</button>
+          <button class="new-btn" (click)="toggleChat()">-</button>
+    </div>
+  </div>
+<div class="chat-body" *ngIf="voiceChat==false && designing==false">
+  <div *ngFor="let msg of messages" class="message" [ngClass]="msg.sender">
+    <ng-container *ngIf="msg.text && msg.sender !== 'divs'">
+      <div class="avatar bot-avatar" *ngIf="msg.sender === 'bot'"><img src="chatbot_profile.png" alt="Agent" style="height:20px;width:20px;" ></div>
+      <div class="bubble">{{ msg.text }}</div>
+      <div class="avatar user-avatar" *ngIf="msg.sender === 'user'"></div>
+    </ng-container>
+
+
+   <ng-container *ngIf="msg.sender === 'divs' && msg.hotelCards">
+      <div class="card-thingy">
+        <div class="avatar bot-avatar"><img src="chatbot_profile.png" alt="Agent" style="height:20px;width:20px;" ></div>
+          <div class="message grid-things">      
+
+            <div class="" *ngFor="let hotelCard of msg.hotelCards">
+              <div class="room-card" [ngStyle]="{'background-image': 'url(' + hotelCard.image + ')'}" (click)="bookHotel(hotelCard)">
+                <div class="room-details">
+                  <h4>{{ hotelCard.name }}</h4> 
+                  <p>${{ hotelCard.description }}</p> 
+                  <!-- The price -->
+                  <!-- <button (click)="bookHotel(hotelCard)">Confirm</button> -->
+                </div>
+              </div>
+            </div>
+
+          </div>
+      </div>
+    </ng-container>
+
+        <!-- Hotel cards -->
+    <ng-container *ngIf="msg.sender === 'divs' && msg.roomCards" class="">
+      <div class="card-thingy">
+        <div class="avatar bot-avatar"><img src="chatbot_profile.png" alt="Agent" style="height:20px;width:20px;" ></div>
+        <div class="message grid-things">      
+          <div class="" *ngFor="let roomCard of msg.roomCards">
+            <div class="room-card" (click)="confirmBooking(roomCard)" [ngStyle]="{'background-image': 'url(' + roomCard.image + ')'}">
+              <div class="room-details">
+                <h4>{{ roomCard.name }}</h4>
+                <p>${{ roomCard.description }}</p>
+                <!-- <button (click)="confirmBooking(roomCard)">Confirm</button> -->
+              </div>
+            </div>
+          </div>
+        </div> 
+      </div>
+    </ng-container>
+
+    <ng-container *ngIf="msg.sender === 'divs' && msg.invoice">
+        <div class="message">      
+          <div class="avatar bot-avatar"><img src="chatbot_profile.png" alt="Agent" style="height:20px;width:20px;" ></div>
+          <div class="invoice-card">
+            <div class="invoice-details">
+              <h4>{{ msg.invoice.hotelname }}</h4>
+              <p>Room Type: {{ msg.invoice.roomType }}</p>
+              <p>Price: ${{ msg.invoice.price }}</p>
+              <button class="zoom-for-hover" (click)="payNow()">Pay Now</button>
+            </div>
+          </div>
+        </div>
+    </ng-container>
+
+
+
+  </div>
+  <div class="loading-thing" *ngIf="loading">
+    <div class="avatar bot-avatar"><img src="chatbot_profile.png" alt="Agent" style="height:20px;width:20px;" ></div>
+    <div class="loading-dot" *ngIf="loading"></div>
+  </div>
+
+</div>
+
+<div class="chat-body-audio chat-body" *ngIf="voiceChat==true || designing==true">
+  <div
+    class="mic-indicator glow"
+    [class.pulse]="isSpeaking"
+    *ngIf="!isDivsPresent">
+    <img src="chatbot_profile.png" alt="">
+  </div>
+  <div class="audio_msg" *ngFor="let msg of messages" [ngClass]="msg.sender">
+
+
+    <ng-container *ngIf="msg.sender === 'divs' && msg.hotelCards && !isRoomsPresent">
+      <div class="card-thingy">
+        <!-- <div class="avatar bot-avatar"><img src="chatbot_profile.png" alt="Agent" style="height:20px;width:20px;" ></div> -->
+          <div class="message grid-things">      
+
+            <div class="" *ngFor="let hotelCard of msg.hotelCards">
+              <div class="room-card" [ngStyle]="{'background-image': 'url(' + hotelCard.image + ')'}" (click)="bookHotel(hotelCard)">
+                <div class="room-details">
+                  <h4>{{ hotelCard.name }}</h4> 
+                  <p>${{ hotelCard.description }}</p> 
+                  <!-- The price -->
+                  <!-- <button (click)="bookHotel(hotelCard)">Confirm</button> -->
+                </div>
+              </div>
+            </div>
+
+          </div>
+      </div>
+    </ng-container>
+
+    <ng-container *ngIf="msg.sender === 'divs' && msg.roomCards && !isInvoicePresent" class="">
+      <div class="card-thingy">
+        <!-- <div class="avatar bot-avatar"><img src="chatbot_profile.png" alt="Agent" style="height:20px;width:20px;" ></div> -->
+        <div class="message grid-things">      
+          <div class="" *ngFor="let roomCard of msg.roomCards">
+            <div class="room-card" (click)="confirmBooking(roomCard)" [ngStyle]="{'background-image': 'url(' + roomCard.image + ')'}">
+              <div class="room-details">
+                <h4>{{ roomCard.name }}</h4>
+                <p>${{ roomCard.description }}</p>
+                <!-- <button (click)="confirmBooking(roomCard)">Confirm</button> -->
+              </div>
+            </div>
+          </div>
+        </div> 
+      </div>
+    </ng-container>
+
+    <ng-container *ngIf="msg.sender === 'divs' && msg.invoice">
+        <div class="message">      
+          <!-- <div class="avatar bot-avatar"><img src="chatbot_profile.png" alt="Agent" style="height:20px;width:20px;" ></div> -->
+          <div class="invoice-card">
+            <div class="invoice-details">
+              <h4>{{ msg.invoice.hotelname }}</h4>
+              <p>Room Type: {{ msg.invoice.roomType }}</p>
+              <p>Price: ${{ msg.invoice.price }}</p>
+              <button class="zoom-for-hover" (click)="payNow()">Pay Now</button>
+            </div>
+          </div>
+        </div>
+    </ng-container>
+    
+  </div>
+
+</div>
+
+<!-- Input -->
+<div *ngIf="voiceChat==false && designing ==false" class="chat-footer">
+  <div class="quick-actions">
+    <button class="action-btn" *ngFor="let question of follow_up" (click)="followUpMessage(question)">{{ question }}</button>
+    <!-- <button class="action-btn">I'm clueless..😭</button> -->
+    <!-- <button class="action-btn">FAQs</button> -->
+  </div>
+  <div class="input-area">
+    <input type="text" [(ngModel)]="userMessage" (keyup.enter)="sendMessage()" [disabled]="loading" placeholder="Type your message here..." />
+    <button *ngIf="userMessage==''" class="send-btn"><img class="zoom-for-hover" (click)="toggleVoice()" src="mic_icon.svg" alt=""></button>
+    <button *ngIf="userMessage!=''" (click)="sendMessage()"  [disabled]="!userMessage || loading" class="send-btn"><img class="zoom-for-hover" src="send.svg" alt=""></button>
+  </div>
+</div>
+
+<div *ngIf="voiceChat==true || designing ==true" class="chat-footer-voice">
+  <div class="voice-area">
+    <button *ngIf="!muted" class="send-btn voicecontrols" (click)="toggleMute()"><img class="" src="unmuted.svg" alt=""></button>
+    <button *ngIf="muted" class="send-btn voicecontrols" (click)="toggleMute()"><img class="" src="muted.svg" alt=""></button>
+    <!-- <div class="visualizer">-_--_-</div> -->
+     <div class="mic-wave" *ngIf="isListening">
+        <span class="dot dot1"></span>
+        <span class="dot dot2"></span>
+        <span class="dot dot3"></span>
+        <!-- <span class="dot dot4"></span>
+        <span class="dot dot5"></span> -->
+      </div>
+    <button [disabled]="isSpeaking" class="send-btn" (click)="toggleVoice()"><img class="zoom-for-hover" src="cross-circle.svg" alt=""></button>
+  </div>
+</div>
+
+</div>
+
+<button class="chat-toggle-btn" (click)="toggleChat()"><img class="zoom-for-hover" src="message_icon.png" alt=""></button>

@@ -1,0 +1,76 @@
+import { Injectable } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
+import { Queryservice } from './queryservice';
+
+@Injectable({
+  providedIn: 'root'
+})
+export class Chatservice {
+  private apiUrl = 'http://127.0.0.1:2024'
+  // private apiUrl = 'http://127.0.0.1:8123'
+  public threadId: string | null = null;
+
+  constructor(private http: HttpClient, private queryService: Queryservice) { }
+
+  createThread(): Observable<string> {
+    return this.http.post<{thread_id: string}>(`${this.apiUrl}/threads`, {}).pipe(
+      map(response => {
+        this.threadId = response.thread_id;
+        return this.threadId;
+      })
+    )
+  }
+
+// : Observable<{message: string}>
+  sendMessage(message: string): Observable<any> {
+    if (!this.threadId) {
+      throw new Error('Thread ID is not set. Please create a thread first.');
+    }
+    const body = {
+      assistant_id: 'agent',
+      input: { messages: [{ role: 'user', content: message }] }
+    };
+    const response = this.http.post<any>(`${this.apiUrl}/threads/${this.threadId}/runs/wait`, body);
+    // console.log('Sending message:', message);
+    return response;
+  }
+
+  chatState(threadID: string): Observable<any> {
+    return this.http.get<any>(`${this.apiUrl}/threads/${threadID}/state`);
+  }
+
+  async bookHotel(hotelId: string): Promise<Observable<any>> {
+    let roomIds: string[] = [];
+    await this.queryService.getRoomsByHotelId(hotelId)
+      .then((response: any) => {
+        roomIds = response.data?.map((room: any) => room.id) ?? [];
+        console.log('Room IDs:', roomIds);
+      })
+      .catch((error: any) => {
+        roomIds = [];
+        console.error('Error fetching rooms:', error);
+      });
+    console.log('Rooms:', roomIds);
+
+    const update = this.http.post<any>(`${this.apiUrl}/threads/${this.threadId}/state`, {
+        "values": {
+          "hotel_selected": hotelId,
+          "show_hotel_list": false,
+          "show_room_list": true,
+          "room_list": roomIds
+        }
+      });
+      update.subscribe({
+        next: (res) => {
+          console.log('Hotel Selected');
+        },
+        error: (err) => {
+          console.error('Error selecting hotel');
+        }
+      });
+
+    return this.chatState(this.threadId!);
+  }
+}
